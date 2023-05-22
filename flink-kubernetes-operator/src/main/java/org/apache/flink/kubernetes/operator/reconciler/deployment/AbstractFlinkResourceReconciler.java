@@ -35,15 +35,20 @@ import org.apache.flink.kubernetes.operator.api.status.Savepoint;
 import org.apache.flink.kubernetes.operator.api.status.SavepointTriggerType;
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.controller.FlinkResourceContext;
+import org.apache.flink.kubernetes.operator.exception.StatusConflictException;
 import org.apache.flink.kubernetes.operator.reconciler.Reconciler;
 import org.apache.flink.kubernetes.operator.reconciler.ReconciliationUtils;
 import org.apache.flink.kubernetes.operator.reconciler.diff.ReflectiveDiffBuilder;
 import org.apache.flink.kubernetes.operator.service.FlinkService;
 import org.apache.flink.kubernetes.operator.utils.EventRecorder;
+import org.apache.flink.kubernetes.operator.utils.FlinkUtils;
 import org.apache.flink.kubernetes.operator.utils.StatusRecorder;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fabric8.kubernetes.client.KubernetesClient;
+import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -81,6 +86,8 @@ public abstract class AbstractFlinkResourceReconciler<
     public static final String MSG_SUBMIT = "Starting deployment";
 
     protected Clock clock = Clock.systemDefaultZone();
+
+    protected final ObjectMapper objectMapper = new ObjectMapper();
 
     public AbstractFlinkResourceReconciler(
             KubernetesClient kubernetesClient,
@@ -141,7 +148,8 @@ public abstract class AbstractFlinkResourceReconciler<
 
             var specChangeMessage = String.format(MSG_SPEC_CHANGED, specDiff.getType(), specDiff);
             LOG.info(specChangeMessage);
-            if (reconciliationStatus.getState() != ReconciliationState.UPGRADING) {
+            if (reconciliationStatus.getState() != ReconciliationState.UPGRADING
+                    && reconciliationStatus.getState() != ReconciliationState.ROLLING_BACK) {
                 eventRecorder.triggerEvent(
                         cr,
                         EventRecorder.Type.Normal,
@@ -161,9 +169,9 @@ public abstract class AbstractFlinkResourceReconciler<
             ReconciliationUtils.updateReconciliationMetadata(cr);
         }
 
-        if (shouldRollBack(cr, observeConfig, ctx.getFlinkService())) {
+        if (shouldRollBack(ctx, observeConfig)) {
             // Rollbacks are executed in two steps, we initiate it first then return
-            if (initiateRollBack(status)) {
+            if (initiateRollBack(ctx, status)) {
                 return;
             }
             LOG.warn(MSG_ROLLBACK);
@@ -173,7 +181,6 @@ public abstract class AbstractFlinkResourceReconciler<
                     EventRecorder.Reason.Rollback,
                     EventRecorder.Component.JobManagerDeployment,
                     MSG_ROLLBACK);
-            rollback(ctx);
         } else if (!reconcileOtherChanges(ctx)) {
             if (!resourceScaler.scale(ctx)) {
                 LOG.info("Resource fully reconciled, nothing to do...");
@@ -233,14 +240,6 @@ public abstract class AbstractFlinkResourceReconciler<
             FlinkResourceContext<CR> ctx, Configuration deployConfig) throws Exception;
 
     /**
-     * Rollback deployed resource to the last stable spec.
-     *
-     * @param ctx Reconciliation context.
-     * @throws Exception Error during rollback.
-     */
-    protected abstract void rollback(FlinkResourceContext<CR> ctx) throws Exception;
-
-    /**
      * Reconcile any other changes required for this resource that are specific to the reconciler
      * implementation.
      *
@@ -293,7 +292,9 @@ public abstract class AbstractFlinkResourceReconciler<
      */
     private boolean checkNewSpecAlreadyDeployed(CR resource, Configuration deployConf) {
         if (resource.getStatus().getReconciliationStatus().getState()
-                == ReconciliationState.UPGRADING) {
+                        == ReconciliationState.UPGRADING
+                || resource.getStatus().getReconciliationStatus().getState()
+                        == ReconciliationState.ROLLING_BACK) {
             return false;
         }
         AbstractFlinkSpec deployedSpec = ReconciliationUtils.getDeployedSpec(resource);
@@ -339,15 +340,13 @@ public abstract class AbstractFlinkResourceReconciler<
      *
      * <p>Rollbacks are only supported to previously running resource specs with HA enabled.
      *
-     * @param resource Resource being reconciled.
+     * @param ctx Reconciliation context.
      * @param configuration Flink cluster configuration.
      * @return True if the resource should be rolled back.
      */
-    private boolean shouldRollBack(
-            AbstractFlinkResource<SPEC, STATUS> resource,
-            Configuration configuration,
-            FlinkService flinkService) {
+    private boolean shouldRollBack(FlinkResourceContext<CR> ctx, Configuration configuration) {
 
+        var resource = ctx.getResource();
         var reconciliationStatus = resource.getStatus().getReconciliationStatus();
         if (reconciliationStatus.getState() == ReconciliationState.ROLLING_BACK) {
             return true;
@@ -384,7 +383,15 @@ public abstract class AbstractFlinkResourceReconciler<
             return false;
         }
 
-        var haDataAvailable = flinkService.isHaMetadataAvailable(configuration);
+        if (resource.getSpec().getJob() != null
+                && resource.getSpec().getJob().getUpgradeMode() == UpgradeMode.SAVEPOINT
+                && FlinkUtils.jmPodNeverStarted(ctx.getJosdkContext())) {
+            // HA data not available as JM never start and relying on SAVEPOINT upgrade mode
+            // Safe to rollback relying on savepoint
+            return true;
+        }
+
+        var haDataAvailable = ctx.getFlinkService().isHaMetadataAvailable(configuration);
         if (!haDataAvailable) {
             LOG.warn("Rollback is not possible due to missing HA metadata");
         }
@@ -394,10 +401,12 @@ public abstract class AbstractFlinkResourceReconciler<
     /**
      * Initiate rollback process by changing the {@link ReconciliationState} in the status.
      *
+     * @param ctx Reconciliation context.
      * @param status Resource status.
      * @return True if a new rollback was initiated.
      */
-    private boolean initiateRollBack(STATUS status) {
+    private boolean initiateRollBack(FlinkResourceContext<CR> ctx, STATUS status)
+            throws JsonProcessingException {
         var reconciliationStatus = status.getReconciliationStatus();
         if (reconciliationStatus.getState() != ReconciliationState.ROLLING_BACK) {
             LOG.warn("Preparing to roll back to last stable spec.");
@@ -406,9 +415,81 @@ public abstract class AbstractFlinkResourceReconciler<
                         "Deployment is not ready within the configured timeout, rolling back.");
             }
             reconciliationStatus.setState(ReconciliationState.ROLLING_BACK);
+            restoreLastStableSpec(ctx.getResource());
             return true;
         }
         return false;
+    }
+
+    /**
+     * .
+     *
+     * @param resource Resource for which the spec should be rolled back
+     * @return True if a new rollback was initiated.
+     */
+    private void restoreLastStableSpec(CR resource) throws JsonProcessingException {
+        SPEC prevSpec = resource.getSpec();
+        SPEC lastStableSpec =
+                resource.getStatus().getReconciliationStatus().deserializeLastStableSpec();
+        resource.setSpec(lastStableSpec);
+
+        // Ensure we use same UpgradeMode on how job was previously suspended
+        UpgradeMode lastReconciledUpgradeMode = resource.getStatus().getReconciliationStatus()
+                .deserializeLastReconciledSpec().getJob().getUpgradeMode();
+        resource.getSpec().getJob().setUpgradeMode(lastReconciledUpgradeMode);
+
+        int retries = 0;
+        while (true) {
+            try {
+                var updated = kubernetesClient.resource(resource).lockResourceVersion().update();
+
+                // If we successfully replaced the status, update the resource version so we know
+                // what to lock next in the same reconciliation loop
+                resource.getMetadata()
+                        .setResourceVersion(updated.getMetadata().getResourceVersion());
+                return;
+            } catch (KubernetesClientException kce) {
+                // 409 is the error code for conflicts resulting from the locking
+                if (kce.getCode() == 409) {
+                    var currentVersion = resource.getMetadata().getResourceVersion();
+                    LOG.debug(
+                            "Could not apply status update for resource version {}",
+                            currentVersion);
+
+                    var latest = kubernetesClient.resource(resource).get();
+                    var latestVersion = latest.getMetadata().getResourceVersion();
+
+                    if (latestVersion.equals(currentVersion)) {
+                        // This should not happen as long as the client works consistently
+                        LOG.error("Unable to fetch latest resource version");
+                        throw kce;
+                    }
+
+                    if (latest.getSpec().equals(prevSpec)) {
+                        if (retries++ < 3) {
+                            LOG.debug(
+                                    "Retrying status update for latest version {}", latestVersion);
+                            resource.getMetadata().setResourceVersion(latestVersion);
+                        } else {
+                            // If we cannot get the latest version in 3 tries we throw the error to
+                            // retry with delay
+                            throw kce;
+                        }
+                    } else {
+                        throw new StatusConflictException(
+                                "Spec have been modified externally in version "
+                                        + latestVersion
+                                        + " Previous: "
+                                        + objectMapper.writeValueAsString(prevSpec)
+                                        + " Latest: "
+                                        + objectMapper.writeValueAsString(latest.getSpec()));
+                    }
+                } else {
+                    // We simply throw non conflict errors, to trigger retry with delay
+                    throw kce;
+                }
+            }
+        }
     }
 
     /**

@@ -125,8 +125,11 @@ public class ReconciliationUtils {
         // Clear errors
         status.setError(null);
         reconciliationStatus.setReconciliationTimestamp(clock.instant().toEpochMilli());
-        reconciliationStatus.setState(
-                upgrading ? ReconciliationState.UPGRADING : ReconciliationState.DEPLOYED);
+        var state = upgrading ? ReconciliationState.UPGRADING : ReconciliationState.DEPLOYED;
+        if (status.getReconciliationStatus().getState() == ReconciliationState.ROLLING_BACK) {
+            state = upgrading ? ReconciliationState.ROLLING_BACK : ReconciliationState.ROLLED_BACK;
+        }
+        reconciliationStatus.setState(state);
 
         if (spec.getJob() != null) {
             // For jobs we have to adjust the reconciled spec
@@ -284,12 +287,7 @@ public class ReconciliationUtils {
     public static <SPEC extends AbstractFlinkSpec> SPEC getDeployedSpec(
             AbstractFlinkResource<SPEC, ?> deployment) {
         var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
-        var reconciliationState = reconciliationStatus.getState();
-        if (reconciliationState != ReconciliationState.ROLLED_BACK) {
-            return reconciliationStatus.deserializeLastReconciledSpec();
-        } else {
-            return reconciliationStatus.deserializeLastStableSpec();
-        }
+        return reconciliationStatus.deserializeLastReconciledSpec();
     }
 
     private static boolean upgradeStarted(

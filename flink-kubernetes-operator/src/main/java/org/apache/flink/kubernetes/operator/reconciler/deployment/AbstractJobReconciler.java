@@ -115,7 +115,16 @@ public abstract class AbstractJobReconciler<
                     MSG_SUSPENDED);
             // We must record the upgrade mode used to the status later
             currentDeploySpec.getJob().setUpgradeMode(availableUpgradeMode.getUpgradeMode().get());
-            cancelJob(ctx, availableUpgradeMode.getUpgradeMode().get());
+
+            UpgradeMode upgradeMode = availableUpgradeMode.getUpgradeMode().get();
+
+            if (upgradeMode == UpgradeMode.SAVEPOINT
+                    && status.getReconciliationStatus().getState()
+                            == ReconciliationState.ROLLING_BACK) {
+                upgradeMode = UpgradeMode.LAST_STATE;
+            }
+
+            cancelJob(ctx, upgradeMode);
             if (desiredJobState == JobState.RUNNING) {
                 ReconciliationUtils.updateStatusBeforeDeploymentAttempt(
                         resource, deployConfig, clock);
@@ -259,30 +268,6 @@ public abstract class AbstractJobReconciler<
         }
 
         deploy(ctx, spec, deployConfig, savepointOpt, requireHaMetadata);
-    }
-
-    @Override
-    protected void rollback(FlinkResourceContext<CR> ctx) throws Exception {
-        var resource = ctx.getResource();
-        var reconciliationStatus = resource.getStatus().getReconciliationStatus();
-        var rollbackSpec = reconciliationStatus.deserializeLastStableSpec();
-        rollbackSpec.getJob().setUpgradeMode(UpgradeMode.LAST_STATE);
-
-        UpgradeMode upgradeMode = resource.getSpec().getJob().getUpgradeMode();
-
-        cancelJob(
-                ctx,
-                upgradeMode == UpgradeMode.STATELESS
-                        ? UpgradeMode.STATELESS
-                        : UpgradeMode.LAST_STATE);
-
-        restoreJob(
-                ctx,
-                rollbackSpec,
-                ctx.getDeployConfig(rollbackSpec),
-                upgradeMode != UpgradeMode.STATELESS);
-
-        reconciliationStatus.setState(ReconciliationState.ROLLED_BACK);
     }
 
     @Override
