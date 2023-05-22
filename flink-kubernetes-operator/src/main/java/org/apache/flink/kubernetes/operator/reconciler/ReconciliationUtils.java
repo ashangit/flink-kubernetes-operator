@@ -125,8 +125,11 @@ public class ReconciliationUtils {
         // Clear errors
         status.setError(null);
         reconciliationStatus.setReconciliationTimestamp(clock.instant().toEpochMilli());
-        reconciliationStatus.setState(
-                upgrading ? ReconciliationState.UPGRADING : ReconciliationState.DEPLOYED);
+        var state = upgrading ? ReconciliationState.UPGRADING : ReconciliationState.DEPLOYED;
+        if (status.getReconciliationStatus().getState() == ReconciliationState.ROLLING_BACK) {
+            state = upgrading ? ReconciliationState.ROLLING_BACK : ReconciliationState.ROLLED_BACK;
+        }
+        reconciliationStatus.setState(state);
 
         if (spec.getJob() != null) {
             // For jobs we have to adjust the reconciled spec
@@ -281,6 +284,17 @@ public class ReconciliationUtils {
                 && !HighAvailabilityMode.isHighAvailabilityModeActivated(observeConfig);
     }
 
+    public static <SPEC extends AbstractFlinkSpec> SPEC getLastSpec(
+            AbstractFlinkResource<SPEC, ?> deployment) {
+        var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
+        var reconciliationState = reconciliationStatus.getState();
+        if (reconciliationState != ReconciliationState.ROLLED_BACK) {
+            return reconciliationStatus.deserializeLastReconciledSpec();
+        } else {
+            return reconciliationStatus.deserializeLastRollbackSpec();
+        }
+    }
+
     public static <SPEC extends AbstractFlinkSpec> SPEC getDeployedSpec(
             AbstractFlinkResource<SPEC, ?> deployment) {
         var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
@@ -340,14 +354,17 @@ public class ReconciliationUtils {
                     deployment, new ValidationException(validationError), conf);
         }
 
-        var lastReconciledSpec = status.getReconciliationStatus().deserializeLastReconciledSpec();
-        if (lastReconciledSpec == null) {
+        var lastSpec = getLastSpec(deployment);
+
+        if (lastSpec == null) {
             // Validation failed before anything was deployed, nothing to do
             return false;
         } else {
             // We need to observe/reconcile using the last version of the deployment spec
-            deployment.setSpec(lastReconciledSpec);
-            if (status.getReconciliationStatus().getState() == ReconciliationState.UPGRADING) {
+            deployment.setSpec(lastSpec);
+            if (status.getReconciliationStatus().getState() == ReconciliationState.UPGRADING
+                    || status.getReconciliationStatus().getState()
+                            == ReconciliationState.ROLLING_BACK) {
                 // We were in the middle of an application upgrade, must set desired state to
                 // running
                 deployment.getSpec().getJob().setState(JobState.RUNNING);
