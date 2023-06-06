@@ -287,7 +287,12 @@ public class ReconciliationUtils {
     public static <SPEC extends AbstractFlinkSpec> SPEC getDeployedSpec(
             AbstractFlinkResource<SPEC, ?> deployment) {
         var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
-        return reconciliationStatus.deserializeLastReconciledSpec();
+        var reconciliationState = reconciliationStatus.getState();
+        if (reconciliationState != ReconciliationState.ROLLED_BACK) {
+            return reconciliationStatus.deserializeLastReconciledSpec();
+        } else {
+            return reconciliationStatus.deserializeLastStableSpec();
+        }
     }
 
     private static boolean upgradeStarted(
@@ -338,14 +343,19 @@ public class ReconciliationUtils {
                     deployment, new ValidationException(validationError), conf);
         }
 
-        var lastReconciledSpec = status.getReconciliationStatus().deserializeLastReconciledSpec();
-        if (lastReconciledSpec == null) {
+        var lastSpec = status.getReconciliationStatus().getState() == ReconciliationState.ROLLED_BACK?
+                status.getReconciliationStatus().deserializeLastRollbackSpec():
+                status.getReconciliationStatus().deserializeLastReconciledSpec();
+
+        if (lastSpec == null) {
             // Validation failed before anything was deployed, nothing to do
             return false;
         } else {
             // We need to observe/reconcile using the last version of the deployment spec
-            deployment.setSpec(lastReconciledSpec);
-            if (status.getReconciliationStatus().getState() == ReconciliationState.UPGRADING) {
+            deployment.setSpec(lastSpec);
+            if (status.getReconciliationStatus().getState() == ReconciliationState.UPGRADING
+                    || status.getReconciliationStatus().getState()
+                            == ReconciliationState.ROLLING_BACK) {
                 // We were in the middle of an application upgrade, must set desired state to
                 // running
                 deployment.getSpec().getJob().setState(JobState.RUNNING);

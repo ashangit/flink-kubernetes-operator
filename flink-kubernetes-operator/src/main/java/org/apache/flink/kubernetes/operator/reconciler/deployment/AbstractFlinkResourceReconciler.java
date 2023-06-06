@@ -35,7 +35,6 @@ import org.apache.flink.kubernetes.operator.api.status.Savepoint;
 import org.apache.flink.kubernetes.operator.api.status.SavepointTriggerType;
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.controller.FlinkResourceContext;
-import org.apache.flink.kubernetes.operator.exception.StatusConflictException;
 import org.apache.flink.kubernetes.operator.reconciler.Reconciler;
 import org.apache.flink.kubernetes.operator.reconciler.ReconciliationUtils;
 import org.apache.flink.kubernetes.operator.reconciler.diff.ReflectiveDiffBuilder;
@@ -48,7 +47,6 @@ import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fabric8.kubernetes.client.KubernetesClient;
-import io.fabric8.kubernetes.client.KubernetesClientException;
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -130,7 +128,8 @@ public abstract class AbstractFlinkResourceReconciler<
             return;
         }
 
-        SPEC lastReconciledSpec =
+        SPEC lastReconciledSpec = reconciliationStatus.getState() == ReconciliationState.ROLLED_BACK?
+                cr.getStatus().getReconciliationStatus().deserializeLastRollbackSpec():
                 cr.getStatus().getReconciliationStatus().deserializeLastReconciledSpec();
         SPEC currentDeploySpec = cr.getSpec();
 
@@ -138,7 +137,8 @@ public abstract class AbstractFlinkResourceReconciler<
 
         boolean specChanged =
                 DiffType.IGNORE != specDiff.getType()
-                        || reconciliationStatus.getState() == ReconciliationState.UPGRADING;
+                        || reconciliationStatus.getState() == ReconciliationState.UPGRADING
+                        || reconciliationStatus.getState() == ReconciliationState.ROLLING_BACK;
 
         var observeConfig = ctx.getObserveConfig();
         if (specChanged) {
@@ -407,6 +407,7 @@ public abstract class AbstractFlinkResourceReconciler<
      */
     private boolean initiateRollBack(FlinkResourceContext<CR> ctx, STATUS status)
             throws JsonProcessingException {
+        var target = ctx.getResource();
         var reconciliationStatus = status.getReconciliationStatus();
         if (reconciliationStatus.getState() != ReconciliationState.ROLLING_BACK) {
             LOG.warn("Preparing to roll back to last stable spec.");
@@ -415,81 +416,10 @@ public abstract class AbstractFlinkResourceReconciler<
                         "Deployment is not ready within the configured timeout, rolling back.");
             }
             reconciliationStatus.setState(ReconciliationState.ROLLING_BACK);
-            restoreLastStableSpec(ctx.getResource());
+            reconciliationStatus.serializeAndSetLastRollbackSpec(target.getSpec(), target);
             return true;
         }
         return false;
-    }
-
-    /**
-     * .
-     *
-     * @param resource Resource for which the spec should be rolled back
-     * @return True if a new rollback was initiated.
-     */
-    private void restoreLastStableSpec(CR resource) throws JsonProcessingException {
-        SPEC prevSpec = resource.getSpec();
-        SPEC lastStableSpec =
-                resource.getStatus().getReconciliationStatus().deserializeLastStableSpec();
-        resource.setSpec(lastStableSpec);
-
-        // Ensure we use same UpgradeMode on how job was previously suspended
-        UpgradeMode lastReconciledUpgradeMode = resource.getStatus().getReconciliationStatus()
-                .deserializeLastReconciledSpec().getJob().getUpgradeMode();
-        resource.getSpec().getJob().setUpgradeMode(lastReconciledUpgradeMode);
-
-        int retries = 0;
-        while (true) {
-            try {
-                var updated = kubernetesClient.resource(resource).lockResourceVersion().update();
-
-                // If we successfully replaced the status, update the resource version so we know
-                // what to lock next in the same reconciliation loop
-                resource.getMetadata()
-                        .setResourceVersion(updated.getMetadata().getResourceVersion());
-                return;
-            } catch (KubernetesClientException kce) {
-                // 409 is the error code for conflicts resulting from the locking
-                if (kce.getCode() == 409) {
-                    var currentVersion = resource.getMetadata().getResourceVersion();
-                    LOG.debug(
-                            "Could not apply status update for resource version {}",
-                            currentVersion);
-
-                    var latest = kubernetesClient.resource(resource).get();
-                    var latestVersion = latest.getMetadata().getResourceVersion();
-
-                    if (latestVersion.equals(currentVersion)) {
-                        // This should not happen as long as the client works consistently
-                        LOG.error("Unable to fetch latest resource version");
-                        throw kce;
-                    }
-
-                    if (latest.getSpec().equals(prevSpec)) {
-                        if (retries++ < 3) {
-                            LOG.debug(
-                                    "Retrying status update for latest version {}", latestVersion);
-                            resource.getMetadata().setResourceVersion(latestVersion);
-                        } else {
-                            // If we cannot get the latest version in 3 tries we throw the error to
-                            // retry with delay
-                            throw kce;
-                        }
-                    } else {
-                        throw new StatusConflictException(
-                                "Spec have been modified externally in version "
-                                        + latestVersion
-                                        + " Previous: "
-                                        + objectMapper.writeValueAsString(prevSpec)
-                                        + " Latest: "
-                                        + objectMapper.writeValueAsString(latest.getSpec()));
-                    }
-                } else {
-                    // We simply throw non conflict errors, to trigger retry with delay
-                    throw kce;
-                }
-            }
-        }
     }
 
     /**

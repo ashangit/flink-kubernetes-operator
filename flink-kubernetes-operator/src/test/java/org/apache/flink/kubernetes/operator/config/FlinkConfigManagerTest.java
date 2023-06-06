@@ -97,11 +97,13 @@ public class FlinkConfigManagerTest {
         reconciliationStatus.serializeAndSetLastReconciledSpec(deployment.getSpec(), deployment);
         reconciliationStatus.markReconciledSpecAsStable();
 
+        assertEquals("stable", configManager.getObserveConfig(deployment).get(testConf));
+
         deployment.getSpec().getFlinkConfiguration().put(testConf.key(), "rolled-back");
         reconciliationStatus.serializeAndSetLastReconciledSpec(deployment.getSpec(), deployment);
         reconciliationStatus.setState(ReconciliationState.ROLLED_BACK);
 
-        assertEquals("stable", configManager.getObserveConfig(deployment).get(testConf));
+        assertEquals("rolled-back", configManager.getObserveConfig(deployment).get(testConf));
 
         deployment.getMetadata().setGeneration(5L);
         var deployConfig =

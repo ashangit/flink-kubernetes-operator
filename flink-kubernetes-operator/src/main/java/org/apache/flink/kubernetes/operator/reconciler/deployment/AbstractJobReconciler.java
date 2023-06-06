@@ -113,11 +113,15 @@ public abstract class AbstractJobReconciler<
                     EventRecorder.Reason.Suspended,
                     EventRecorder.Component.JobManagerDeployment,
                     MSG_SUSPENDED);
-            // We must record the upgrade mode used to the status later
-            currentDeploySpec.getJob().setUpgradeMode(availableUpgradeMode.getUpgradeMode().get());
 
             UpgradeMode upgradeMode = availableUpgradeMode.getUpgradeMode().get();
 
+            // We must record the upgrade mode used to the status later
+            currentDeploySpec.getJob().setUpgradeMode(upgradeMode);
+
+            // We must use LAST_STATE mode when rolling back from
+            // SAVEPOINT. But we don't want to set upgrade mode to LAST_STATE
+            // as we will rely on SAVEPOINT restoreJob mechanism
             if (upgradeMode == UpgradeMode.SAVEPOINT
                     && status.getReconciliationStatus().getState()
                             == ReconciliationState.ROLLING_BACK) {
