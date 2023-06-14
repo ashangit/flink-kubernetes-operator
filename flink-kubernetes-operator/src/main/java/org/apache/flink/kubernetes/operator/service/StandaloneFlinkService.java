@@ -45,8 +45,13 @@ import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static java.time.temporal.ChronoUnit.SECONDS;
 
 /**
  * Implementation of {@link FlinkService} submitting and interacting with Standalone Kubernetes
@@ -133,7 +138,8 @@ public class StandaloneFlinkService extends AbstractFlinkService {
             ObjectMeta meta,
             Configuration conf,
             boolean deleteHaData,
-            DeletionPropagation deletionPropagation) {
+            DeletionPropagation deletionPropagation,
+            Duration deletionTimeout) {
         final String clusterId = meta.getName();
         final String namespace = meta.getNamespace();
 
@@ -145,6 +151,13 @@ public class StandaloneFlinkService extends AbstractFlinkService {
                 .withName(StandaloneKubernetesUtils.getJobManagerDeploymentName(clusterId))
                 .withPropagationPolicy(deletionPropagation)
                 .delete();
+        kubernetesClient
+                .apps()
+                .deployments()
+                .inNamespace(namespace)
+                .withName(StandaloneKubernetesUtils.getJobManagerDeploymentName(clusterId))
+                .waitUntilCondition(
+                        Objects::isNull, deletionTimeout.get(SECONDS), TimeUnit.SECONDS);
 
         LOG.info("Deleting Flink Standalone cluster TM resources");
         kubernetesClient
@@ -154,6 +167,13 @@ public class StandaloneFlinkService extends AbstractFlinkService {
                 .withName(StandaloneKubernetesUtils.getTaskManagerDeploymentName(clusterId))
                 .withPropagationPolicy(deletionPropagation)
                 .delete();
+        kubernetesClient
+                .apps()
+                .deployments()
+                .inNamespace(namespace)
+                .withName(StandaloneKubernetesUtils.getTaskManagerDeploymentName(clusterId))
+                .waitUntilCondition(
+                        Objects::isNull, deletionTimeout.get(SECONDS), TimeUnit.SECONDS);
         if (deleteHaData) {
             deleteHAData(namespace, clusterId, conf);
         }

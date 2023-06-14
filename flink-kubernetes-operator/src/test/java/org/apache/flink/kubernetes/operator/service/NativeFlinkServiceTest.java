@@ -66,6 +66,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Map;
@@ -497,7 +498,8 @@ public class NativeFlinkServiceTest {
                             ObjectMeta meta,
                             Configuration conf,
                             boolean deleteHaData,
-                            DeletionPropagation deletionPropagation) {
+                            DeletionPropagation deletionPropagation,
+                            Duration deletionTimeout) {
                         propagation.add(deletionPropagation);
                     }
                 };

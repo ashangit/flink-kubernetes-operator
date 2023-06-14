@@ -497,4 +497,11 @@ public class KubernetesOperatorConfigOptions {
                     .enumType(DeletionPropagation.class)
                     .defaultValue(DeletionPropagation.FOREGROUND)
                     .withDescription("JM/TM Deployment deletion propagation.");
+
+    @Documentation.Section(SECTION_ADVANCED)
+    public static final ConfigOption<Duration> RESOURCE_DELETION_TIMEOUT =
+            operatorConfig("resource.deletion.timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofSeconds(30))
+                    .withDescription("Time after which deployments must have been deleted.");
 }

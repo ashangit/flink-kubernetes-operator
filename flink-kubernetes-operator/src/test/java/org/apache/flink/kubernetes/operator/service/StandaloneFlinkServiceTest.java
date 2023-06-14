@@ -81,7 +81,7 @@ public class StandaloneFlinkServiceTest {
         flinkStandaloneService.deleteClusterDeployment(
                 flinkDeployment.getMetadata(), flinkDeployment.getStatus(), configuration, false);
 
-        assertEquals(2, mockServer.getRequestCount() - requestsBeforeDelete);
+        assertEquals(4, mockServer.getRequestCount() - requestsBeforeDelete);
         assertTrue(mockServer.getLastRequest().getPath().contains("taskmanager"));
 
         deployments = kubernetesClient.apps().deployments().list().getItems();

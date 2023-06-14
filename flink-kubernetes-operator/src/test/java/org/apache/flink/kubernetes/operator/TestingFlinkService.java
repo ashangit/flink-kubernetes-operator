@@ -76,6 +76,7 @@ import lombok.Setter;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -433,7 +434,8 @@ public class TestingFlinkService extends AbstractFlinkService {
             ObjectMeta meta,
             Configuration conf,
             boolean deleteHaMeta,
-            DeletionPropagation deletionPropagation) {
+            DeletionPropagation deletionPropagation,
+            Duration deletionTimeout) {
         jobs.clear();
         sessions.remove(meta.getName());
     }

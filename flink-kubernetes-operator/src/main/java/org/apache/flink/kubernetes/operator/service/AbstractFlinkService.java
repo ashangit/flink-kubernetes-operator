@@ -108,6 +108,7 @@ import java.net.Socket;
 import java.net.SocketAddress;
 import java.net.URI;
 import java.nio.file.Files;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -974,8 +975,9 @@ public abstract class AbstractFlinkService implements FlinkService {
             boolean deleteHaData) {
 
         var deletionPropagation = configManager.getOperatorConfiguration().getDeletionPropagation();
+        var deletionTimeout = configManager.getOperatorConfiguration().getDeletionTimeout();
         LOG.info("Deleting cluster with {} propagation", deletionPropagation);
-        deleteClusterInternal(meta, conf, deleteHaData, deletionPropagation);
+        deleteClusterInternal(meta, conf, deleteHaData, deletionPropagation, deletionTimeout);
         updateStatusAfterClusterDeletion(status);
     }
 
@@ -993,7 +995,8 @@ public abstract class AbstractFlinkService implements FlinkService {
             ObjectMeta meta,
             Configuration conf,
             boolean deleteHaData,
-            DeletionPropagation deletionPropagation);
+            DeletionPropagation deletionPropagation,
+            Duration deletionTimeout);
 
     protected void deleteHAData(String namespace, String clusterId, Configuration conf) {
         // We need to wait for cluster shutdown otherwise HA data might be recreated

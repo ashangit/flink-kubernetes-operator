@@ -39,6 +39,12 @@ import io.fabric8.kubernetes.client.KubernetesClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.Duration;
+import java.util.Objects;
+import java.util.concurrent.TimeUnit;
+
+import static java.time.temporal.ChronoUnit.SECONDS;
+
 /**
  * Implementation of {@link FlinkService} submitting and interacting with Native Kubernetes Flink
  * clusters and jobs.
@@ -112,7 +118,8 @@ public class NativeFlinkService extends AbstractFlinkService {
             ObjectMeta meta,
             Configuration conf,
             boolean deleteHaData,
-            DeletionPropagation deletionPropagation) {
+            DeletionPropagation deletionPropagation,
+            Duration deletionTimeout) {
 
         String namespace = meta.getNamespace();
         String clusterId = meta.getName();
@@ -127,6 +134,13 @@ public class NativeFlinkService extends AbstractFlinkService {
                 .withName(KubernetesUtils.getDeploymentName(clusterId))
                 .withPropagationPolicy(deletionPropagation)
                 .delete();
+        kubernetesClient
+                .apps()
+                .deployments()
+                .inNamespace(namespace)
+                .withName(KubernetesUtils.getDeploymentName(clusterId))
+                .waitUntilCondition(
+                        Objects::isNull, deletionTimeout.get(SECONDS), TimeUnit.SECONDS);
 
         if (deleteHaData) {
             deleteHAData(namespace, clusterId, conf);
