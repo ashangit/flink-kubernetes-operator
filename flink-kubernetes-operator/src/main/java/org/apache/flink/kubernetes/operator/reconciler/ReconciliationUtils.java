@@ -63,6 +63,7 @@ public class ReconciliationUtils {
     private static final Logger LOG = LoggerFactory.getLogger(ReconciliationUtils.class);
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
+
     /**
      * Update status after successful deployment of a new resource spec. Existing reconciliation
      * errors will be cleared, lastReconciled spec will be updated and for suspended jobs it will
@@ -131,9 +132,13 @@ public class ReconciliationUtils {
         }
         reconciliationStatus.setState(state);
 
+        var clonedSpec = ReconciliationUtils.clone(spec);
+        if (status.getReconciliationStatus().getState() == ReconciliationState.ROLLING_BACK
+                || status.getReconciliationStatus().getState() == ReconciliationState.ROLLED_BACK) {
+            clonedSpec = reconciliationStatus.deserializeLastReconciledSpec();
+        }
         if (spec.getJob() != null) {
             // For jobs we have to adjust the reconciled spec
-            var clonedSpec = ReconciliationUtils.clone(spec);
             var job = clonedSpec.getJob();
             job.setState(stateAfterReconcile);
 
@@ -156,7 +161,7 @@ public class ReconciliationUtils {
                 reconciliationStatus.markReconciledSpecAsStable();
             }
         } else {
-            reconciliationStatus.serializeAndSetLastReconciledSpec(spec, target);
+            reconciliationStatus.serializeAndSetLastReconciledSpec(clonedSpec, target);
         }
     }
 
@@ -284,17 +289,6 @@ public class ReconciliationUtils {
                 && !HighAvailabilityMode.isHighAvailabilityModeActivated(observeConfig);
     }
 
-    public static <SPEC extends AbstractFlinkSpec> SPEC getLastSpec(
-            AbstractFlinkResource<SPEC, ?> deployment) {
-        var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
-        var reconciliationState = reconciliationStatus.getState();
-        if (reconciliationState != ReconciliationState.ROLLED_BACK) {
-            return reconciliationStatus.deserializeLastReconciledSpec();
-        } else {
-            return reconciliationStatus.deserializeLastRollbackSpec();
-        }
-    }
-
     public static <SPEC extends AbstractFlinkSpec> SPEC getDeployedSpec(
             AbstractFlinkResource<SPEC, ?> deployment) {
         var reconciliationStatus = deployment.getStatus().getReconciliationStatus();
@@ -354,14 +348,14 @@ public class ReconciliationUtils {
                     deployment, new ValidationException(validationError), conf);
         }
 
-        var lastSpec = getLastSpec(deployment);
+        var lastReconciledSpec = status.getReconciliationStatus().deserializeLastReconciledSpec();
 
-        if (lastSpec == null) {
+        if (lastReconciledSpec == null) {
             // Validation failed before anything was deployed, nothing to do
             return false;
         } else {
             // We need to observe/reconcile using the last version of the deployment spec
-            deployment.setSpec(lastSpec);
+            deployment.setSpec(lastReconciledSpec);
             if (status.getReconciliationStatus().getState() == ReconciliationState.UPGRADING
                     || status.getReconciliationStatus().getState()
                             == ReconciliationState.ROLLING_BACK) {

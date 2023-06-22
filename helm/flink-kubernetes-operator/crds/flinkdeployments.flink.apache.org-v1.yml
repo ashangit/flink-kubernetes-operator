@@ -9303,8 +9303,6 @@ spec:
                     type: string
                   lastStableSpec:
                     type: string
-                  lastRollbackSpec:
-                    type: string
                   state:
                     enum:
                     - DEPLOYED

@@ -44,7 +44,6 @@ import org.apache.flink.kubernetes.operator.utils.FlinkUtils;
 import org.apache.flink.kubernetes.operator.utils.StatusRecorder;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.fabric8.kubernetes.client.KubernetesClient;
 import io.javaoperatorsdk.operator.api.reconciler.DeleteControl;
@@ -128,10 +127,11 @@ public abstract class AbstractFlinkResourceReconciler<
             return;
         }
 
-        SPEC lastSpec = ReconciliationUtils.getLastSpec(cr);
+        SPEC lastReconciledSpec =
+                cr.getStatus().getReconciliationStatus().deserializeLastReconciledSpec();
         SPEC currentDeploySpec = cr.getSpec();
 
-        var specDiff = new ReflectiveDiffBuilder<>(lastSpec, currentDeploySpec).build();
+        var specDiff = new ReflectiveDiffBuilder<>(lastReconciledSpec, currentDeploySpec).build();
 
         boolean specChanged =
                 DiffType.IGNORE != specDiff.getType()
@@ -169,7 +169,7 @@ public abstract class AbstractFlinkResourceReconciler<
 
         if (shouldRollBack(ctx, observeConfig)) {
             // Rollbacks are executed in two steps, we initiate it first then return
-            if (initiateRollBack(ctx, status)) {
+            if (initiateRollBack(status)) {
                 return;
             }
             LOG.warn(MSG_ROLLBACK);
@@ -399,13 +399,10 @@ public abstract class AbstractFlinkResourceReconciler<
     /**
      * Initiate rollback process by changing the {@link ReconciliationState} in the status.
      *
-     * @param ctx Reconciliation context.
      * @param status Resource status.
      * @return True if a new rollback was initiated.
      */
-    private boolean initiateRollBack(FlinkResourceContext<CR> ctx, STATUS status)
-            throws JsonProcessingException {
-        var target = ctx.getResource();
+    private boolean initiateRollBack(STATUS status) {
         var reconciliationStatus = status.getReconciliationStatus();
         if (reconciliationStatus.getState() != ReconciliationState.ROLLING_BACK) {
             LOG.warn("Preparing to roll back to last stable spec.");
@@ -414,7 +411,6 @@ public abstract class AbstractFlinkResourceReconciler<
                         "Deployment is not ready within the configured timeout, rolling back.");
             }
             reconciliationStatus.setState(ReconciliationState.ROLLING_BACK);
-            reconciliationStatus.serializeAndSetLastRollbackSpec(target.getSpec(), target);
             return true;
         }
         return false;
